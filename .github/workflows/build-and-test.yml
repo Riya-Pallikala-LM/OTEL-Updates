@@ -208,11 +208,11 @@ jobs:
             ./bin/*
 
   agent-bundle-linux:
-    runs-on: ubuntu-20.04
     strategy:
       matrix:
         ARCH: ["amd64", "arm64"]
       fail-fast: false
+    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - uses: actions/checkout@v3
 
@@ -220,11 +220,6 @@ jobs:
         with:
           path: .cache/buildx/agent-bundle-${{ matrix.ARCH }}
           key: agent-bundle-buildx-${{ matrix.ARCH }}-${{ hashFiles('pkg/signalfx-agent/bundle/**') }}
-
-      - uses: docker/setup-qemu-action@v2
-        if: ${{ matrix.ARCH != 'amd64' }}
-        with:
-          platforms: ${{ matrix.ARCH }}
 
       - run: make -C pkg/signalfx-agent/bundle agent-bundle-linux ARCH=${{ matrix.ARCH }}
 
@@ -254,14 +249,13 @@ jobs:
 
   build-package:
     name: build-package
-    # Use 20.04.5 until https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/16450 is resolved
-    runs-on: ubuntu-20.04
     needs: [cross-compile, agent-bundle-linux]
     strategy:
       matrix:
         SYS_PACKAGE: [ "deb", "rpm", "tar" ]
         ARCH: [ "amd64", "arm64" ]
       fail-fast: false
+    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - name: Check out the codebase.
         uses: actions/checkout@v3
@@ -295,8 +289,6 @@ jobs:
           path: ./dist/splunk-otel-collector*
 
   test-package:
-    # Use 20.04.5 until https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/16450 is resolved
-    runs-on: ubuntu-20.04
     timeout-minutes: 60
     needs: [build-package]
     strategy:
@@ -308,6 +300,7 @@ jobs:
           - SYS_PACKAGE: "tar"
             TEST_CASE: "upgrade"
       fail-fast: false
+    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - name: Check out the codebase.
         uses: actions/checkout@v3
@@ -316,11 +309,6 @@ jobs:
         with:
           name: ${{ matrix.SYS_PACKAGE }}-${{ matrix.ARCH }}-package
           path: ./dist
-
-      - uses: docker/setup-qemu-action@v2
-        if: ${{ matrix.ARCH != 'amd64' }}
-        with:
-          platforms: ${{ matrix.ARCH }}
 
       - name: Setup python
         uses: actions/setup-python@v4
@@ -566,12 +554,11 @@ jobs:
 
   docker-otelcol:
     name: docker-otelcol
-    # Use 20.04.5 until https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/16450 is resolved
-    runs-on: ubuntu-20.04
     needs: [cross-compile, agent-bundle-linux]
     strategy:
       matrix:
         ARCH: [ "amd64", "arm64", "ppc64le" ]
+    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - name: Check out the codebase.
         uses: actions/checkout@v3
@@ -583,7 +570,7 @@ jobs:
           cache-dependency-path: '**/go.sum'
 
       - name: Set up QEMU
-        if: ${{ matrix.ARCH != 'amd64' }}
+        if: ${{ matrix.ARCH == 'ppc64le' }}
         uses: docker/setup-qemu-action@v2
         with:
           platforms: ${{ matrix.ARCH }}
