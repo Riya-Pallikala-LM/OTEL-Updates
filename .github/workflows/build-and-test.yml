@@ -212,7 +212,7 @@ jobs:
       matrix:
         ARCH: ["amd64", "arm64"]
       fail-fast: false
-    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
+    runs-on: ${{ matrix.ARCH == 'arm64' && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - uses: actions/checkout@v3
 
@@ -255,7 +255,7 @@ jobs:
         SYS_PACKAGE: [ "deb", "rpm", "tar" ]
         ARCH: [ "amd64", "arm64" ]
       fail-fast: false
-    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
+    runs-on: ${{ matrix.ARCH == 'arm64' && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - name: Check out the codebase.
         uses: actions/checkout@v3
@@ -300,7 +300,7 @@ jobs:
           - SYS_PACKAGE: "tar"
             TEST_CASE: "upgrade"
       fail-fast: false
-    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
+    runs-on: ${{ matrix.ARCH == 'arm64' && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - name: Check out the codebase.
         uses: actions/checkout@v3
@@ -558,7 +558,7 @@ jobs:
     strategy:
       matrix:
         ARCH: [ "amd64", "arm64", "ppc64le" ]
-    runs-on: ${{ matrix.ARCH == "arm64" && 'self-hosted' || 'ubuntu-20.04'  }}
+    runs-on: ${{ matrix.ARCH == 'arm64' && 'self-hosted' || 'ubuntu-20.04'  }}
     steps:
       - name: Check out the codebase.
         uses: actions/checkout@v3
