@@ -85,7 +85,8 @@ def verify_env_file(container):
 def skip_if_necessary(distro, puppet_release):
     if distro == "ubuntu-focal":
         pytest.skip("requires https://github.com/puppetlabs/puppetlabs-release/issues/271 to be resolved")
-
+    if int(puppet_release) > 7 and distro in ("debian-stretch", "ubuntu-xenial"):
+        pytest.skip(f"puppet {puppet_release} not supported for {distro}")
 
 @pytest.mark.puppet
 @pytest.mark.parametrize(

@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - puppet-8
   pull_request:
     paths:
       - '.github/workflows/puppet-test.yml'
@@ -57,7 +58,7 @@ jobs:
     strategy:
       matrix:
         PACKAGE_TYPE: [ "deb", "rpm" ]
-        PUPPET_RELEASE: [ "6", "7" ]
+        PUPPET_RELEASE: [ "6", "7", "8" ]
         TEST_CASE: [ "with_fluentd", "without_fluentd", "with_instrumentation", "custom_vars" ]
     steps:
       - name: Check out the codebase.
