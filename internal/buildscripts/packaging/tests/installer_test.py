@@ -23,6 +23,7 @@ from tests.helpers.util import (
     run_distro_container,
     service_is_running,
     wait_for,
+    wait_for_systemd,
     DEB_DISTROS,
     REPO_DIR,
     RPM_DISTROS,
@@ -47,6 +48,10 @@ GATEWAY_CONFIG_PATH = "/etc/otel/collector/gateway_config.yaml"
 OLD_CONFIG_PATH = "/etc/otel/collector/splunk_config_linux.yaml"
 INSTR_CONF_PATH = "/usr/lib/splunk-instrumentation/instrumentation.conf"
 LIBSPLUNK_PATH = "/usr/lib/splunk-instrumentation/libsplunk.so"
+OLD_INSTR_PKG = "splunk-otel-auto-instrumentation"
+NEW_INSTR_PKG = "splunk-otel-systemd-auto-instrumentation"
+INSTR_JAR_PATH = "/usr/lib/splunk-instrumentation/splunk-otel-javaagent.jar"
+INSTR_PROP_FILE = "/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties"
 
 INSTALLER_TIMEOUT = "30m"
 
@@ -112,7 +117,7 @@ def verify_support_bundle(container):
 def verify_uninstall(container, distro):
     run_container_cmd(container, "sh -x /test/install.sh --uninstall")
 
-    for pkg in ("splunk-otel-collector", "td-agent", "splunk-otel-auto-instrumentation"):
+    for pkg in ("splunk-otel-collector", "td-agent", OLD_INSTR_PKG, NEW_INSTR_PKG):
         if distro in DEB_DISTROS:
             assert container.exec_run(f"dpkg -s {pkg}").exit_code != 0
         else:
@@ -155,11 +160,13 @@ def test_installer_default(distro, arch, mode):
             run_container_cmd(container, install_cmd, env={"VERIFY_ACCESS_TOKEN": "false"}, timeout=INSTALLER_TIMEOUT)
             time.sleep(5)
 
-            # verify splunk-otel-auto-instrumentation is not installed
+            # verify the auto instrumentation packages were not installed
             if distro in DEB_DISTROS:
-                assert container.exec_run("dpkg -s splunk-otel-auto-instrumentation").exit_code != 0
+                assert container.exec_run(f"dpkg -s {OLD_INSTR_PKG}").exit_code != 0
+                assert container.exec_run(f"dpkg -s {NEW_INSTR_PKG}").exit_code != 0
             else:
-                assert container.exec_run("rpm -q splunk-otel-auto-instrumentation").exit_code != 0
+                assert container.exec_run(f"rpm -q {OLD_INSTR_PKG}").exit_code != 0
+                assert container.exec_run(f"rpm -q {NEW_INSTR_PKG}").exit_code != 0
 
             # verify env file created with configured parameters
             verify_env_file(container, mode=mode)
@@ -258,13 +265,20 @@ def test_installer_custom(distro, arch):
     + [pytest.param(distro, marks=pytest.mark.rpm) for distro in RPM_DISTROS],
     )
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
-def test_installer_with_instrumentation_default(distro, arch):
+@pytest.mark.parametrize("package", [OLD_INSTR_PKG, NEW_INSTR_PKG])
+def test_installer_with_instrumentation_default(distro, arch, package):
     if distro == "opensuse-12" and arch == "arm64":
         pytest.skip("opensuse-12 arm64 no longer supported")
 
-    install_cmd = get_installer_cmd()
-    install_cmd = f"{install_cmd} --without-fluentd"
-    install_cmd = f"{install_cmd} --with-instrumentation"
+    install_cmd = " ".join((
+        get_installer_cmd(),
+        "--test",  # DELETE ME
+        "--without-fluentd",
+        "--with-instrumentation",
+    ))
+
+    if package == OLD_INSTR_PKG:
+        install_cmd = f"{install_cmd} --instrumentation-package {OLD_INSTR_PKG}"
 
     print(f"Testing installation on {distro} from {STAGE} stage ...")
     with run_distro_container(distro, arch) as container:
@@ -281,25 +295,43 @@ def test_installer_with_instrumentation_default(distro, arch):
             # verify collector service status
             assert wait_for(lambda: service_is_running(container, service_owner=SERVICE_OWNER))
 
-            # verify splunk-otel-auto-instrumentation is installed
+            # verify the auto instrumentation package is installed
             if distro in DEB_DISTROS:
-                assert container.exec_run("dpkg -s splunk-otel-auto-instrumentation").exit_code == 0
+                assert container.exec_run(f"dpkg -s {package}").exit_code == 0
             else:
-                assert container.exec_run("rpm -q splunk-otel-auto-instrumentation").exit_code == 0
+                assert container.exec_run(f"rpm -q {package}").exit_code == 0
 
-            # verify /etc/ld.so.preload is configured
-            run_container_cmd(container, f"grep '^{LIBSPLUNK_PATH}$' /etc/ld.so.preload")
+            if package == OLD_INSTR_PKG:
+                # verify /etc/ld.so.preload is configured
+                run_container_cmd(container, f"grep '^{LIBSPLUNK_PATH}$' /etc/ld.so.preload")
 
-            # verify deployment.environment attribute is not set
-            run_container_cmd(container, f"grep -v '^resource_attributes=deployment.environment=.*$' {INSTR_CONF_PATH}")
+                # verify deployment.environment attribute is not set
+                run_container_cmd(container, f"grep -v '^resource_attributes=deployment.environment=.*$' {INSTR_CONF_PATH}")
 
-            # verify default options
-            run_container_cmd(container, f"grep '^disable_telemetry=false$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^generate_service_name=true$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep -v '^service_name=.*$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^enable_profiler=false$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^enable_profiler_memory=false$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^enable_metrics=false$' {INSTR_CONF_PATH}")
+                # verify default options
+                run_container_cmd(container, f"grep '^disable_telemetry=false$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^generate_service_name=true$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep -v '^service_name=.*$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^enable_profiler=false$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^enable_profiler_memory=false$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^enable_metrics=false$' {INSTR_CONF_PATH}")
+            else:
+                # restart the container to ensure the changes take effect
+                container.restart()
+                timeout = 10 if arch == "amd64" else 30
+                wait_for_systemd(container, timeout=timeout)
+
+                # verify the systemd env vars were configured
+                _, output = run_container_cmd(container, "systemctl show-environment")
+                assert f"JAVA_TOOL_OPTIONS=-javaagent:{INSTR_JAR_PATH}" in output.decode("utf-8")
+                assert f"OTEL_JAVAAGENT_CONFIGURATION_FILE={INSTR_PROP_FILE}" in output.decode("utf-8")
+
+                # verify default properties
+                run_container_cmd(container, f"grep -v '^otel.resource.attributes=deployment.environment=.*$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep -v '^otel.service.name=.*$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^splunk.metrics.enabled=false$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^splunk.profiler.enabled=false$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^splunk.profiler.memory.enabled=false$' {INSTR_PROP_FILE}")
 
             verify_uninstall(container, distro)
 
@@ -315,14 +347,17 @@ def test_installer_with_instrumentation_default(distro, arch):
     + [pytest.param(distro, marks=pytest.mark.rpm) for distro in RPM_DISTROS],
     )
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
-def test_installer_with_instrumentation_custom(distro, arch):
+@pytest.mark.parametrize("package", [OLD_INSTR_PKG, NEW_INSTR_PKG])
+def test_installer_with_instrumentation_custom(distro, arch, package):
     if distro == "opensuse-12" and arch == "arm64":
         pytest.skip("opensuse-12 arm64 no longer supported")
 
     install_cmd = " ".join((
         get_installer_cmd(),
+        "--test",  # DELETE ME
         "--without-fluentd",
         "--with-instrumentation",
+        f"--instrumentation-package {package}",
         "--deployment-environment test",
         "--disable-telemetry",
         "--service-name test",
@@ -347,25 +382,43 @@ def test_installer_with_instrumentation_custom(distro, arch):
             # verify collector service status
             assert wait_for(lambda: service_is_running(container, service_owner=SERVICE_OWNER))
 
-            # verify splunk-otel-auto-instrumentation is installed
+            # verify the auto instrumentation package is installed
             if distro in DEB_DISTROS:
-                assert container.exec_run("dpkg -s splunk-otel-auto-instrumentation").exit_code == 0
+                assert container.exec_run(f"dpkg -s {package}").exit_code == 0
             else:
-                assert container.exec_run("rpm -q splunk-otel-auto-instrumentation").exit_code == 0
+                assert container.exec_run(f"rpm -q {package}").exit_code == 0
 
-            # verify /etc/ld.so.preload is configured
-            run_container_cmd(container, f"grep '^{LIBSPLUNK_PATH}$' /etc/ld.so.preload")
+            if package == OLD_INSTR_PKG:
+                # verify /etc/ld.so.preload is configured
+                run_container_cmd(container, f"grep '^{LIBSPLUNK_PATH}$' /etc/ld.so.preload")
 
-            # verify deployment.environment is set
-            run_container_cmd(container, f"grep '^resource_attributes=deployment.environment=test$' {INSTR_CONF_PATH}")
+                # verify deployment.environment is set
+                run_container_cmd(container, f"grep '^resource_attributes=deployment.environment=test$' {INSTR_CONF_PATH}")
 
-            # verify custom options
-            run_container_cmd(container, f"grep '^disable_telemetry=true$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^generate_service_name=false$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^service_name=test$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^enable_profiler=true$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^enable_profiler_memory=true$' {INSTR_CONF_PATH}")
-            run_container_cmd(container, f"grep '^enable_metrics=true$' {INSTR_CONF_PATH}")
+                # verify custom options
+                run_container_cmd(container, f"grep '^disable_telemetry=true$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^generate_service_name=false$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^service_name=test$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^enable_profiler=true$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^enable_profiler_memory=true$' {INSTR_CONF_PATH}")
+                run_container_cmd(container, f"grep '^enable_metrics=true$' {INSTR_CONF_PATH}")
+            else:
+                # restart the container to ensure the changes take effect
+                container.restart()
+                timeout = 10 if arch == "amd64" else 30
+                wait_for_systemd(container, timeout=timeout)
+
+                # verify the systemd env vars were configured
+                _, output = run_container_cmd(container, "systemctl show-environment")
+                assert f"JAVA_TOOL_OPTIONS=-javaagent:{INSTR_JAR_PATH}" in output.decode("utf-8")
+                assert f"OTEL_JAVAAGENT_CONFIGURATION_FILE={INSTR_PROP_FILE}" in output.decode("utf-8")
+
+                # verify custom properties
+                run_container_cmd(container, f"grep '^otel.resource.attributes=deployment.environment=test$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^otel.service.name=test$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^splunk.metrics.enabled=true$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^splunk.profiler.enabled=true$' {INSTR_PROP_FILE}")
+                run_container_cmd(container, f"grep '^splunk.profiler.memory.enabled=true$' {INSTR_PROP_FILE}")
 
             verify_uninstall(container, distro)
 

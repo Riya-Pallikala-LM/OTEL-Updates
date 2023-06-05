@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - systemd-instrumentation-installer
   pull_request:
     paths:
       - '.github/workflows/installer-script-test.yml'

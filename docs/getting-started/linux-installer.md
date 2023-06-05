@@ -6,13 +6,18 @@ For non-containerized Linux environments, an installer script is available. The
 script deploys and configures:
 
 - Splunk OpenTelemetry Collector for Linux (**x86_64/amd64 and aarch64/arm64 platforms only**)
-- [SignalFx Smart Agent and collectd bundle](https://github.com/signalfx/signalfx-agent/releases) (**x86_64/amd64 platforms only**)
+- [SignalFx Smart Agent and collectd bundle](
+  https://github.com/signalfx/splunk-otel-collector/tree/main/internal/signalfx-agent/bundle)
+  (**x86_64/amd64 platforms only; aarch64/arm64 support is currently experimental**)
 - [Fluentd (via the TD Agent)](https://www.fluentd.org/)
   - Optional, **enabled** by default for supported Linux distributions
   - See the [Fluentd Configuration](#fluentd-configuration) section for additional information, including how to skip installation.
-- [Splunk OpenTelemetry Auto Instrumentation for Java](https://github.com/signalfx/splunk-otel-collector/tree/main/instrumentation#linux-java-auto-instrumentation)
+- [Splunk OpenTelemetry Zero Configuration Auto Instrumentation for Java](
+  https://github.com/signalfx/splunk-otel-collector/tree/main/instrumentation) (**x86_64/amd64 and aarch64/arm64 platforms only**)
   - Optional, **disabled** by default
   - See the [Auto Instrumentation](#auto-instrumentation) section for additional information, including how to enable installation.
+
+## Supported Platforms
 
 > IMPORTANT: systemd is required to use this script.
 
@@ -276,17 +281,37 @@ applicable for `td-agent` versions 4.1 or newer):
 
 ### Auto Instrumentation
 
->To see all supported options and defaults **before** installation, run:
->```sh
->curl -sSL https://dl.signalfx.com/splunk-otel-collector.sh > /tmp/splunk-otel-collector.sh && \
->sh /tmp/splunk-otel-collector.sh -h
->```
+[**Splunk OpenTelemetry Zero Configuration Auto Instrumentation for Java**](
+https://github.com/signalfx/splunk-otel-collector/tree/main/instrumentation)
+installs and enables the
+[Splunk OpenTelemetry Auto Instrumentation Java Agent](
+https://github.com/signalfx/splunk-otel-java) to automatically instrument
+Java applications running as `systemd` services on Linux, send the captured
+distributed traces to the locally running Collector, and then on to
+[Splunk APM](https://docs.splunk.com/Observability/apm/intro-to-apm.html).
+
+#### Requirements
+
+- Check [Supported Platforms](#supported-platforms)
+- Check [Java agent compatibility and requirements](
+  https://docs.splunk.com/Observability/gdi/get-data-in/application/java/java-otel-requirements.html)
+- Java application(s) running as `systemd` services
+
+For Java applications ***not*** running as `systemd` services, see the
+[Instructions for app servers](
+https://docs.splunk.com/Observability/gdi/get-data-in/application/java/instrumentation/java-servers-instructions.html)
+for how to manually enable and configure the Java agent.
 
 #### Installation
 
-To install the Collector and the Splunk OpenTelemetry Auto Instrumentation for
-Java packages, run the installer script with the `--with-instrumentation`
-option:
+> To see all supported options and defaults **before** installation, run:
+> ```sh
+> curl -sSL https://dl.signalfx.com/splunk-otel-collector.sh > /tmp/splunk-otel-collector.sh && \
+> sh /tmp/splunk-otel-collector.sh -h
+> ```
+
+To install the Collector and the Auto Instrumentation packages, run the
+installer script with the `--with-instrumentation` option:
 ```sh
 curl -sSL https://dl.signalfx.com/splunk-otel-collector.sh > /tmp/splunk-otel-collector.sh && \
 sudo sh /tmp/splunk-otel-collector.sh --with-instrumentation --realm SPLUNK_REALM -- SPLUNK_ACCESS_TOKEN
@@ -301,63 +326,80 @@ curl -sSL https://dl.signalfx.com/splunk-otel-collector.sh > /tmp/splunk-otel-co
 sudo sh /tmp/splunk-otel-collector.sh --with-instrumentation --deployment-environment VALUE --realm SPLUNK_REALM -- SPLUNK_ACCESS_TOKEN
 ```
 
-**Note:** After successful installation, the Java application(s) on the host
-need to be manually started/restarted for automatic instrumentation to take
-effect.
+**Note:** After successful installation, reboot the system or restart the Java
+`systemd` service(s) on the host for automatic instrumentation to take effect.
 
 #### Post-Install Configuration
 
-- The `/etc/ld.so.preload` file will be automatically created/updated with the
-  default path to the installed instrumentation library
-  (`/usr/lib/splunk-instrumentation/libsplunk.so`).  If necessary, custom
-  library paths can be manually added to this file.
-- The `/usr/lib/splunk-instrumentation/instrumentation.conf` configuration file
-  can be manually configured for resource attributes and other parameters.  By
-  default, this file will contain the `java_agent_jar` parameter set to the
-  path of the installed [Java Instrumentation Agent](
-  https://github.com/signalfx/splunk-otel-java)
-  (`/usr/lib/splunk-instrumentation/splunk-otel-javaagent.jar`).  If the
-  `--deployment-environment VALUE` installer script option was specified,
-  the `deployment.environment=VALUE` resource attribute will be automatically
-  added to this file.
+The `/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties`
+configuration file is auto-generated based on the specified installation
+options and defaults. The Java agent is configured by default to consume system
+properties from this file via the `OTEL_JAVAAGENT_CONFIGURATION_FILE`
+environment variable defined within the
+`/etc/systemd/system.conf.d/00-splunk-otel-javaagent.conf` systemd drop-in
+file.
 
-See [Linux Java Auto Instrumentation](https://github.com/signalfx/splunk-otel-collector/tree/main/instrumentation#linux-java-auto-instrumentation)
-for more details.
+Any changes to these files will affect ***all*** `systemd` services, unless
+overriden by [higher-priority](
+https://github.com/signalfx/splunk-otel-collector/tree/main/instrumentation/README.md#configuration-priority)
+system or service configurations.
 
-**Note:** After any configuration changes, the Java application(s) on the host
-need to be manually started/restarted to source the updated values from the
-configuration file.
+To add/modify [supported system properties](
+https://docs.splunk.com/Observability/gdi/get-data-in/application/java/configuration/advanced-java-otel-configuration.html)
+in `/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties`
+(requires `root` privileges):
+1. Update `/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties`
+   for the desired system properties. For example:
+     ```shell
+     $ cat <<EOH > /usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties
+     # This is a comment
+     otel.service.name=my-service
+     otel.resource.attributes=deployment.environment=my-environment
+     splunk.metrics.enabled=true
+     splunk.profiler.enabled=true
+     splunk.profiler.memory.enabled=true
+     EOH
+     ```
+2. After any configuration changes, reboot the system or run the following
+   command to restart the applicable services for the changes to take effect:
+     ```shell
+     $ systemctl restart <service-name>   # replace "<service-name>" and run for each applicable service
+     ```
+
+See [Splunk OpenTelemetry Zero Configuration Auto Instrumentation for Java](
+https://github.com/signalfx/splunk-otel-collector/tree/main/instrumentation/README.md)
+for more details and other configuration options.
 
 #### Upgrade
 
-To upgrade the Auto Instrumentation package, run the following commands on your
-system (requires `root` privileges):
+To upgrade the Auto Instrumentation package (if available), run the following
+commands on your system (requires `root` privileges):
 - Debian:
   ```sh
-  sudo apt-get update
-  sudo apt-get install --only-upgrade splunk-otel-auto-instrumentation
+  sudo apt-get update && \
+  sudo apt-get install --only-upgrade splunk-otel-systemd-auto-instrumentation
   ```
   **Note:** You may be prompted to keep or overwrite the configuration file at
-  `/usr/lib/splunk-instrumentation/instrumentation.conf`.  Choosing to
-  overwrite will revert this file to the default file provided by the new
+  `/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties`.  Choosing
+  to overwrite will revert this file to the default file provided by the new
   package.
 - RPM:
   - `yum`
     ```sh
-    sudo yum upgrade splunk-otel-auto-instrumentation
+    sudo yum upgrade splunk-otel-systemd-auto-instrumentation
     ```
   - `dnf`
     ```sh
-    sudo dnf upgrade splunk-otel-auto-instrumentation
+    sudo dnf upgrade splunk-otel-systemd-auto-instrumentation
     ```
   - `zypper`
     ```sh
-    sudo zypper refresh
-    sudo zypper update splunk-otel-auto-instrumentation
+    sudo zypper refresh && \
+    sudo zypper update splunk-otel-systemd-auto-instrumentation
     ```
 
-**Note:** After successful upgrade, the Java application(s) on the host need to
-be manually started/restarted in order for the changes to take effect.
+**Note:** After successful upgrade, reboot the system or restart the
+Java `systemd` service(s) on the host for the changes to take effect.
 
 ### Uninstall
 
