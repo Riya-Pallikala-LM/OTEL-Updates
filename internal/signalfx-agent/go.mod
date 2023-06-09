@@ -124,6 +124,7 @@ require (
 	github.com/kr/pretty v0.3.1
 	github.com/signalfx/signalfx-agent/pkg/apm v0.0.0-00010101000000-000000000000
 	github.com/smartystreets/goconvey v1.8.0
+	go.opentelemetry.io/collector/pdata v1.0.0-rc2
 	gotest.tools v2.2.0+incompatible
 )
 
