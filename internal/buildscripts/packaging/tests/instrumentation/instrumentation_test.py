@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
 import glob
 import os
+import time
 
 from pathlib import Path
 
 import pytest
+from iterators import TimeoutIterator
 
 from tests.helpers.util import (
     copy_file_into_container,
@@ -38,9 +39,8 @@ RPM_DISTROS = [df.split(".")[-1] for df in glob.glob(str(IMAGES_DIR / "rpm" / "D
 OTELCOL_BIN_DIR = REPO_DIR / "bin"
 COLLECTOR_CONFIG_PATH = TESTS_DIR / "instrumentation" / "config.yaml"
 DEFAULT_CONF_PATH = "/usr/lib/systemd/system.conf.d/00-splunk-otel-javaagent.conf"
+DEFAULT_PROFILE_PATH ="/etc/profile.d/00-splunk-otel-javaagent.sh"
 DEFAULT_PROPERTIES_PATH = "/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties"
-CUSTOM_CONF_PATH = TESTS_DIR / "instrumentation" / "01-my-env-vars.conf"
-CUSTOM_CONF_INSTALL_PATH = os.path.join(os.path.dirname(DEFAULT_CONF_PATH), os.path.basename(CUSTOM_CONF_PATH))
 CUSTOM_PROPERTIES_PATH = TESTS_DIR / "instrumentation" / "splunk-otel-javaagent.properties"
 PKG_NAME = "splunk-otel-systemd-auto-instrumentation"
 OLD_PKG_NAME = "splunk-otel-auto-instrumentation"
@@ -83,68 +83,72 @@ def install_package(container, distro, path):
     elif container.exec_run("command -v dnf").exit_code == 0:
         run_container_cmd(container, f"dnf install -y {path}")
 
-
-
-def verify_tomcat_instrumentation(container, config, otelcol_path=None):
-    # overwrite the default config installed by the package with the custom test config
-    if config == "env_vars":
-        copy_file_into_container(container, CUSTOM_CONF_PATH, CUSTOM_CONF_INSTALL_PATH)
-    elif config == "properties_file":
-        copy_file_into_container(container, CUSTOM_PROPERTIES_PATH, DEFAULT_PROPERTIES_PATH)
-
+    # restart the container and ensure systemd is running after package installation
     print("Restarting container ...")
     run_container_cmd(container, "systemctl stop tomcat")
     container.restart()
+    _, output = wait_for_container_cmd(container, "systemctl show-environment", timeout=30)
 
-    # wait for systemd and verify env vars were configured
-    _, env_vars = wait_for_container_cmd(container, "systemctl show-environment", timeout=30)
-    assert f"JAVA_TOOL_OPTIONS=-javaagent:{JAVA_AGENT_PATH}" in str(env_vars)
-    assert f"OTEL_JAVAAGENT_CONFIGURATION_FILE={DEFAULT_PROPERTIES_PATH}" in str(env_vars)
+    assert f"JAVA_TOOL_OPTIONS=-javaagent:{JAVA_AGENT_PATH}" in output.decode("utf-8"), \
+        f"{JAVA_AGENT_PATH} not found in systemd environment"
 
+def verify_tomcat_instrumentation(container, config, otelcol_path=None):
     # start the collector and get the output stream
     if otelcol_path:
-        _, stream = container.exec_run(f"{otelcol_path} --config=/test/config.yaml", stream=True)
+        stream = container.exec_run(f"{otelcol_path} --config=/test/config.yaml", stream=True).output
     else:
         wait_for_container_cmd(container, "systemctl status splunk-otel-collector", timeout=30)
-        _, stream = container.exec_run("journalctl -f -u splunk-otel-collector", stream=True)
+        stream = container.exec_run("journalctl -f -u splunk-otel-collector", stream=True).output
 
-    print("Waiting for tomcat ...")
-    wait_for_container_cmd(container, "systemctl status tomcat", timeout=30)
+    # overwrite the default properties file installed by the package with the custom properties
+    copy_file_into_container(container, CUSTOM_PROPERTIES_PATH, DEFAULT_PROPERTIES_PATH)
+
+    # restart tomcat to pick up the custom properties
+    print("Restarting tomcat ...")
+    if config == "systemd":
+        # restart the tomcat service
+        run_container_cmd(container, "systemctl restart tomcat")
+    else:
+        # stop the tomcat service and start it with a login shell
+        run_container_cmd(container, "systemctl stop tomcat")
+        tomcat_env = {
+            "JAVA_HOME": "/opt/java/openjdk",
+            "CATALINA_PID": "/usr/local/tomcat/temp/tomcat.pid",
+            "CATALINA_HOME": "/usr/local/tomcat",
+            "CATALINA_BASE": "/usr/local/tomcat",
+            "CATALINA_OPTS": "-Xms512M -Xmx1024M -server -XX:+UseParallelGC",
+            "JAVA_OPTS": "-Djava.awt.headless=true",
+        }
+        container.exec_run("bash -l -c /usr/local/tomcat/bin/startup.sh", environment=tomcat_env, detach=True)
+
+    print("Waiting for http://127.0.0.1:8080/sample ...")
     wait_for_container_cmd(container, "curl -sSL http://127.0.0.1:8080/sample", timeout=180)
 
-    # check tomcat logs to ensure the java agent was picked up
-    _, tomcat_logs = run_container_cmd(container, "cat /usr/local/tomcat/logs/catalina.out")
-    assert f"-javaagent:{JAVA_AGENT_PATH}" in str(tomcat_logs), f"'{JAVA_AGENT_PATH}' not found in tomcat logs"
-
-    # check the collector output for span and attributes
-    async def check_output():
-        span = "http.target: Str(/sample)"
-        span_found = False
-        service_name = f"service: Str(service_name_from_{config})"
-        service_name_found = False
-        deployment_environment = f"deployment_environment: Str(deployment_environment_from_{config})"
-        deployment_environment_found = False
-        profiling = "com.splunk.sourcetype: Str(otel.profiling)"
-        profiling_found = False
-        for data in stream:
-            output = data.decode("utf-8")
-            print(output.rstrip())
-            if span in output:
-                span_found = True
+    # check the collector output stream for span/attributes
+    start_time = time.time()
+    target = "http.target: Str(/sample)"
+    target_found = False
+    service_name = "service: Str(service_name_from_properties_file)"
+    service_name_found = False
+    deployment_environment = "deployment_environment: Str(deployment_environment_from_properties_file)"
+    deployment_environment_found = False
+    profiling = "com.splunk.sourcetype: Str(otel.profiling)"
+    profiling_found = False
+    for output in TimeoutIterator(stream, timeout=10, sentinel=None):
+        assert (time.time() - start_time) < 300, "timed out waiting for span/attributes"
+        if output:
+            output = output.decode("utf-8").rstrip()
+            print(output)
+            if target in output:
+                target_found = True
             if service_name in output:
                 service_name_found = True
             if deployment_environment in output:
                 deployment_environment_found = True
             if profiling in output:
                 profiling_found = True
-            if span_found and service_name_found and deployment_environment_found and profiling_found:
-                return
-            await asyncio.sleep(1)
-
-    try:
-        asyncio.run(asyncio.wait_for(check_output(), timeout=300))
-    except asyncio.exceptions.TimeoutError:
-        raise AssertionError("timed out waiting for span/attributes")
+            if target_found and service_name_found and deployment_environment_found and profiling_found:
+                break
 
 
 @pytest.mark.parametrize(
@@ -153,7 +157,7 @@ def verify_tomcat_instrumentation(container, config, otelcol_path=None):
     + [pytest.param(distro, marks=pytest.mark.rpm) for distro in RPM_DISTROS],
     )
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
-@pytest.mark.parametrize("config", ["env_vars", "properties_file"])
+@pytest.mark.parametrize("config", ["systemd", "shell"])
 def test_package_install(distro, arch, config):
     if distro == "opensuse-12" and arch == "arm64":
         pytest.skip("opensuse-12 arm64 no longer supported")
@@ -176,9 +180,8 @@ def test_package_install(distro, arch, config):
         install_package(container, distro, f"/test/{pkg_base}")
 
         # verify files were installed
-        run_container_cmd(container, f"test -f {JAVA_AGENT_PATH}")
-        run_container_cmd(container, f"test -f {DEFAULT_PROPERTIES_PATH}")
-        run_container_cmd(container, f"test -f {DEFAULT_CONF_PATH}")
+        for path in (JAVA_AGENT_PATH, DEFAULT_PROPERTIES_PATH, DEFAULT_CONF_PATH, DEFAULT_PROFILE_PATH):
+            run_container_cmd(container, f"test -f {path}")
 
         verify_tomcat_instrumentation(container, config, otelcol_path=f"/test/{otelcol_bin}")
 
@@ -189,7 +192,7 @@ def test_package_install(distro, arch, config):
     + [pytest.param(distro, marks=pytest.mark.rpm) for distro in RPM_DISTROS],
     )
 @pytest.mark.parametrize("arch", ["amd64", "arm64"])
-@pytest.mark.parametrize("config", ["env_vars", "properties_file"])
+@pytest.mark.parametrize("config", ["systemd", "shell"])
 def test_package_upgrade(distro, arch, config):
     if distro == "opensuse-12" and arch == "arm64":
         pytest.skip("opensuse-12 arm64 no longer supported")
@@ -234,9 +237,8 @@ def test_package_upgrade(distro, arch, config):
         run_container_cmd(container, "test ! -f /usr/lib/splunk-instrumentation/libsplunk.so")
 
         # verify files were installed after upgrade
-        run_container_cmd(container, f"test -f {JAVA_AGENT_PATH}")
-        run_container_cmd(container, f"test -f {DEFAULT_PROPERTIES_PATH}")
-        run_container_cmd(container, f"test -f {DEFAULT_CONF_PATH}")
+        for path in (JAVA_AGENT_PATH, DEFAULT_PROPERTIES_PATH, DEFAULT_CONF_PATH, DEFAULT_PROFILE_PATH):
+            run_container_cmd(container, f"test -f {path}")
 
         verify_tomcat_instrumentation(container, config)
 
@@ -289,3 +291,4 @@ def test_package_uninstall(distro, arch):
         run_container_cmd(container, f"test ! -f {JAVA_AGENT_PATH}")
         run_container_cmd(container, f"test ! -f {DEFAULT_PROPERTIES_PATH}")
         run_container_cmd(container, f"test ! -f {DEFAULT_CONF_PATH}")
+        run_container_cmd(container, f"test ! -f {DEFAULT_PROPERTIES_PATH}")

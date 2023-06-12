@@ -29,6 +29,8 @@ JAVA_AGENT_RELEASE_URL="https://github.com/signalfx/splunk-otel-java/releases/"
 JAVA_AGENT_INSTALL_PATH="/usr/lib/splunk-instrumentation/splunk-otel-javaagent.jar"
 CONFIG_INSTALL_PATH="/usr/lib/systemd/system.conf.d/00-splunk-otel-javaagent.conf"
 CONFIG_REPO_PATH="${FPM_DIR}/00-splunk-otel-javaagent.conf"
+PROFILE_INSTALL_PATH="/etc/profile.d/00-splunk-otel-javaagent.sh"
+PROFILE_REPO_PATH="${FPM_DIR}/00-splunk-otel-javaagent.sh"
 PROPERTIES_INSTALL_PATH="/usr/lib/splunk-instrumentation/splunk-otel-javaagent.properties"
 PROPERTIES_REPO_PATH="${FPM_DIR}/splunk-otel-javaagent.properties"
 
@@ -81,4 +83,9 @@ setup_files_and_permissions() {
     cp -f "$CONFIG_REPO_PATH" "$buildroot/$CONFIG_INSTALL_PATH"
     sudo chown root:root "$buildroot/$CONFIG_INSTALL_PATH"
     sudo chmod 644 "$buildroot/$CONFIG_INSTALL_PATH"
+
+    mkdir -p "$buildroot/$(dirname $PROFILE_INSTALL_PATH)"
+    cp -f "$PROFILE_REPO_PATH" "$buildroot/$PROFILE_INSTALL_PATH"
+    sudo chown root:root "$buildroot/$PROFILE_INSTALL_PATH"
+    sudo chmod 644 "$buildroot/$PROFILE_INSTALL_PATH"
 }
